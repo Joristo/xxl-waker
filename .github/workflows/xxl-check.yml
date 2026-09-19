@@ -20,7 +20,7 @@ jobs:
       - id: check
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-          SIZE: S
+          SIZE: XXL
         run: python check_xxl.py
       - name: Stop met checken na melding
         if: steps.check.outputs.available == 'true'
