@@ -24,7 +24,7 @@ STATE_FILE = "state.json"
 PL_BASE = "https://shop.premierleague.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
-SOLD_OUT = re.compile(r"unselectable|disabled|out-of-stock|outofstock|sold-?out|not-available|unavailable|uitverkocht|line-through", re.I)
+SOLD_OUT = re.compile(r"unselectable|disabled|out-of-stock|outofstock|sold-?out|not-available|unavailable|uitverkocht|line-through|\bslash\b", re.I)
 
 
 def get(url, accept="text/html", ajax=False):
@@ -192,16 +192,25 @@ def nuxt_blocks(page):
     return out
 
 
+def size_elements(page, size):
+    """Alle HTML-elementen waarvan de tekst precies de maat is: lijst van (tagnaam, volledig element, openingstag)."""
+    out = []
+    # (?=...) zorgt dat ook elementen binnen andere elementen gevonden worden (bv. <button> in <li>)
+    for m in re.finditer(r"(?=(<(button|label|li|option|a|span|div)\b([^>]*)>(.{0,300}?)</\2>))", page, re.S | re.I):
+        text = re.sub(r"<[^>]+>", " ", m.group(4))
+        if re.sub(r"\s+", " ", html.unescape(text)).strip().upper() == size:
+            out.append((m.group(2).lower(), m.group(1), f"<{m.group(2)}{m.group(3)}>"))
+    return out
+
+
 def html_buttons(page, size):
     """Zoekt knopjes/labels met precies de maattekst en kijkt of ze 'uitverkocht' ogen."""
-    tags = []
-    for m in re.finditer(r"<(button|label|li|option|a|span|div)\b([^>]*)>(.{0,300}?)</\1>", page, re.S | re.I):
-        text = re.sub(r"<[^>]+>", " ", m.group(3))
-        if re.sub(r"\s+", " ", html.unescape(text)).strip().upper() == size:
-            tags.append(m.group(0)[:300])
-    if not tags:
+    els = size_elements(page, size)
+    if not els:
         return (None, "html")
-    return (not all(SOLD_OUT.search(t) for t in tags), "html-knop")
+    knoppen = [e for e in els if e[0] in ("button", "label", "option", "a")]
+    gekozen = knoppen or els
+    return (not all(SOLD_OUT.search(e[1]) for e in gekozen), "html-knop")
 
 
 def check_generic(url, sizes, page=None):
@@ -246,11 +255,15 @@ def diagnose(item):
                 walk_for_size(b, s, found)
             for st, node in found[:3]:
                 print(f"{label}: {st} <- {json.dumps(node, ensure_ascii=False)[:300]}")
-        tags = [m.group(0)[:250] for m in re.finditer(r"<(button|label|li|option|a|span|div)\b([^>]*)>(.{0,300}?)</\1>", page, re.S | re.I)
-                if re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", m.group(3)))).strip().upper() == s]
-        for t in tags[:4]:
-            print(f"html: {t}")
         print(f"Conclusie: {check_generic(item['url'], [s], page)[s]}")
+    print("--- alle maten op de pagina (om te vergelijken met wat je zelf op de site ziet) ---")
+    for s in ("XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL"):
+        els = [e for e in size_elements(page, s) if e[0] == "button"]
+        if els:
+            klassen = re.search(r'class="([^"]*)"', els[0][2])
+            korte = " ".join(t for t in (klassen.group(1).split() if klassen else [])
+                             if not t.startswith(("hover:", "border", "min-", "h-", "px", "inline", "items", "justify", "transition", "duration")))
+            print(f"{s}: {'OP VOORRAAD' if not SOLD_OUT.search(els[0][1]) else 'uitverkocht'} | classes: {korte[:120]}")
     apis = sorted(set(re.findall(r'["\'](/api/[^"\'\s<>]{3,80}|https?://[^"\'\s<>]*(?:api|graphql)[^"\'\s<>]{0,60})["\']', page)))
     print("API-adressen op de pagina:", apis[:10] or "geen")
     ctx = re.search(r".{0,80}Check winkelvoorraad.{0,80}", page, re.S | re.I)
