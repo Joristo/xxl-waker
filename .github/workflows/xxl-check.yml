@@ -9,6 +9,10 @@ on:
         description: "Alleen een testmelding sturen"
         type: boolean
         default: false
+      diagnose:
+        description: "Alleen diagnose van niet-Premier League sites tonen"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -28,6 +32,7 @@ jobs:
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           TESTMELDING: ${{ inputs.testmelding }}
+          DIAGNOSE: ${{ inputs.diagnose }}
         run: python check_xxl.py
       - name: Status opslaan
         if: always()
