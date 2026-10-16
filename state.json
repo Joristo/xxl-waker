@@ -2,5 +2,27 @@
   "https://shop.premierleague.com/en/premier-league-x-guinness-football-jersey-purple-and-black/701247195-black%2Fpurple.html|XXL": false,
   "https://shop.premierleague.com/en/premier-league-x-guinness-football-jersey-gold-and-black/701247194-black.html|M": false,
   "https://shop.premierleague.com/en/premier-league-x-guinness-football-jersey-gold-and-black/701247194-black.html|XXL": false,
-  "https://www.psvfanstore.nl/product/psv-coen-dillen-thuisshirt-shortsleeve-0001008518|M": true
+  "https://www.psvfanstore.nl/product/psv-coen-dillen-thuisshirt-shortsleeve-0001008518|M": true,
+  "https://shop.premierleague.com/en/premier-league-x-guinness-football-jersey-purple-and-black/701247195-black%2Fpurple.html|__pagina__": {
+    "status": "ok",
+    "misses": 0,
+    "final": "https://shop.premierleague.com/en/premier-league-x-guinness-football-jersey-purple-and-black/701247195-black%2Fpurple.html"
+  },
+  "https://shop.premierleague.com/en/premier-league-x-guinness-football-jersey-gold-and-black/701247194-black.html|__pagina__": {
+    "status": "ok",
+    "misses": 0,
+    "final": "https://shop.premierleague.com/en/premier-league-x-guinness-football-jersey-gold-and-black/701247194-black.html"
+  },
+  "https://www.psvfanstore.nl/product/psv-coen-dillen-thuisshirt-shortsleeve-0001008518|__pagina__": {
+    "status": "ok",
+    "misses": 0,
+    "final": "https://www.psvfanstore.nl/product/psv-coen-dillen-thuisshirt-shortsleeve-0001008518"
+  },
+  "https://www.psvfanstore.nl/product/psv-coen-dillen-thuisshirt-shortsleeve-0001008518|XL": true,
+  "https://www.psvfanstore.nl/product/psv-retro-thuisshirt-9697-0001005098|__pagina__": {
+    "misses": 1
+  },
+  "https://www.psvfanstore.nl/psv-retro-shirt-89-90|__pagina__": {
+    "misses": 1
+  }
 }
