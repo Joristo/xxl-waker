@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Voorraadwaker: checkt meerdere shirts/maten op meerdere webshops en stuurt
-een pushmelding via ntfy.sh zodra een maat (weer) op voorraad is."""
+pushmeldingen via ntfy.sh bij: maat op voorraad, maat uitverkocht,
+pagina verwijderd en pagina weer terug."""
 import html, json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
 # ===== Pas hier aan welke shirts en maten je wilt volgen =====
@@ -15,8 +16,17 @@ WATCHLIST = [
      "maten": ["M", "XXL"]},
     {"naam": "PSV Dillen thuisshirt", "type": "generic",
      "url": "https://www.psvfanstore.nl/product/psv-coen-dillen-thuisshirt-shortsleeve-0001008518",
-     "maten": ["M"]},
+     "maten": ["M", "XL"]},
+    {"naam": "PSV retro thuisshirt 96/97", "type": "generic",
+     "url": "https://www.psvfanstore.nl/product/psv-retro-thuisshirt-9697-0001005098",
+     "maten": ["XL"]},
+    {"naam": "PSV retro shirt 89/90", "type": "generic",
+     "url": "https://www.psvfanstore.nl/psv-retro-shirt-89-90",
+     "maten": ["XL"]},
 ]
+
+# Pas na zoveel checks achter elkaar "verwijderd" melden (voorkomt vals alarm bij een storing)
+VERWIJDERD_NA = 2
 # =============================================================
 
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
@@ -25,6 +35,7 @@ PL_BASE = "https://shop.premierleague.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
 SOLD_OUT = re.compile(r"unselectable|disabled|out-of-stock|outofstock|sold-?out|not-available|unavailable|uitverkocht|line-through|\bslash\b", re.I)
+NOT_FOUND_TITLE = ("404", "not found", "niet gevonden", "bestaat niet", "no longer available", "niet meer beschikbaar")
 
 
 def get(url, accept="text/html", ajax=False):
@@ -36,15 +47,37 @@ def get(url, accept="text/html", ajax=False):
         return r.read().decode("utf-8", "replace")
 
 
-def notify(title, message, click, priority="high"):
+def fetch_page(url):
+    """Haalt een pagina op. Geeft (status, html, eind-url, reden) terug.
+    status: 'ok' | 'removed' (404/410) | 'error' (tijdelijk probleem, bv. 403/500/time-out)."""
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "text/html",
+                                               "Accept-Language": "nl,en;q=0.8"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return ("ok", r.read().decode("utf-8", "replace"), r.geturl(), "")
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410):
+            return ("removed", None, url, f"HTTP {e.code}")
+        return ("error", None, url, f"HTTP {e.code}")
+    except Exception as e:
+        return ("error", None, url, f"{e.__class__.__name__}: {e}")
+
+
+def notify(title, message, click, priority="high", tags="shirt,tada"):
+    """Stuurt een pushmelding. Geeft True terug als dat lukte (anders wordt het de volgende run opnieuw geprobeerd)."""
     if not NTFY_TOPIC:
         print("[!] Geen NTFY_TOPIC ingesteld, melding niet verstuurd.")
-        return
-    req = urllib.request.Request(
-        f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"), method="POST",
-        headers={"Title": title, "Priority": priority, "Tags": "shirt,tada", "Click": click})
-    urllib.request.urlopen(req, timeout=30)
-    print("    [+] Melding verstuurd.")
+        return True
+    try:
+        req = urllib.request.Request(
+            f"https://ntfy.sh/{NTFY_TOPIC}", data=message.encode("utf-8"), method="POST",
+            headers={"Title": title, "Priority": priority, "Tags": tags, "Click": click})
+        urllib.request.urlopen(req, timeout=30)
+        print(f"    [+] Melding verstuurd: {title}")
+        return True
+    except Exception as e:
+        print(f"    [!] Melding versturen mislukt ({e.__class__.__name__}), volgende run opnieuw.")
+        return False
 
 
 # ---------------------------------------------------------------- Premier League (SFCC)
@@ -58,11 +91,11 @@ def sizes_from_json(data, sizes, results):
                     results[s] = bool(v["selectable"])
 
 
-def check_sfcc(url, sizes):
+def check_sfcc(url, sizes, page):
     """Geeft {maat: (True/False/None, bron)} terug."""
     sizes = [s.upper() for s in sizes]
     results = {s: None for s in sizes}
-    page = html.unescape(get(url))
+    page = html.unescape(page)
 
     urls = set(re.findall(r'(?:https://[^"\'\s<>]+)?/on/demandware\.store/[^"\'\s<>]*Product-Variation\?[^"\'\s<>]+', page))
     site = re.search(r"/on/demandware\.store/(Sites-[^/]+-Site)/([^/]+)/", page)
@@ -213,9 +246,8 @@ def html_buttons(page, size):
     return (not all(SOLD_OUT.search(e[1]) for e in gekozen), "html-knop")
 
 
-def check_generic(url, sizes, page=None):
+def check_generic(url, sizes, page):
     sizes = [s.upper() for s in sizes]
-    page = page if page is not None else get(url)
     ld, nuxt = jsonld_blocks(page), nuxt_blocks(page)
     out = {}
     for s in sizes:
@@ -233,17 +265,66 @@ def check_generic(url, sizes, page=None):
     return out
 
 
+# ---------------------------------------------------------------- Bestaat de pagina nog?
+def _norm(u):
+    return urllib.parse.unquote(urllib.parse.urlsplit(u).path).rstrip("/").lower()
+
+
+def _ids(u):
+    """Productnummers (6+ cijfers) in een adres, bv. 0001008518 of 701247195."""
+    return set(re.findall(r"\d{6,}", urllib.parse.unquote(urllib.parse.urlsplit(u).path)))
+
+
+def same_product(url, final, baseline):
+    """Kwam de site (eventueel na doorsturen) uit op hetzelfde product?"""
+    if _norm(final) in {_norm(url), _norm(baseline or url)}:
+        return True
+    ids = _ids(url)
+    return bool(ids) and bool(ids & _ids(final))
+
+
+def not_found_title(page):
+    m = re.search(r"<title[^>]*>(.*?)</title>", page, re.S | re.I)
+    t = html.unescape(m.group(1)).lower() if m else ""
+    return any(x in t for x in NOT_FOUND_TITLE)
+
+
+def evaluate(item, baseline):
+    """Geeft (signaal, resultaten, eind-url, reden) terug.
+    signaal: 'ok' | 'removed' | 'error' (tijdelijk) | 'unknown' (pagina bestaat, maar maten onleesbaar)."""
+    url = item["url"]
+    status, page, final, reason = fetch_page(url)
+    if status != "ok":
+        return status, None, final, reason
+    kind = item.get("type") or ("sfcc" if "premierleague.com" in url else "generic")
+    results = (check_sfcc if kind == "sfcc" else check_generic)(url, item["maten"], page)
+    found = any(a is not None for a, _ in results.values())
+    if not same_product(url, final, baseline):
+        if found and not baseline:
+            # Eerste keer: adres stuurt door naar de echte productpagina, die onthouden we.
+            return "ok", results, final, f"doorgestuurd naar {final}"
+        return "removed", None, final, f"doorgestuurd naar {final}"
+    if not found:
+        if not_found_title(page):
+            return "removed", None, final, "niet-gevonden-pagina"
+        return "unknown", None, final, ""
+    return "ok", results, final, ""
+
+
+# ---------------------------------------------------------------- Diagnose
 def diagnose(item):
     print(f"\n===== DIAGNOSE: {item['naam']} =====")
-    try:
-        page = get(item["url"])
-    except urllib.error.HTTPError as e:
-        print(f"HTTP-fout {e.code}: de site blokkeert waarschijnlijk geautomatiseerd verkeer.")
+    status, page, final, reason = fetch_page(item["url"])
+    print(f"Ophalen: {status} {reason}".rstrip())
+    if status == "removed":
+        print("Deze pagina bestaat nu niet. De waker meldt dat en laat het weten zodra hij terug is.")
         return
-    print(f"Pagina: {len(page)} tekens")
-    for name in ("nuxt", "shopify", "magento", "lightspeed", "woocommerce", "cloudflare", "demandware"):
-        if name in page.lower():
-            print(f"Platformhint: {name}")
+    if status != "ok":
+        print("Tijdelijk probleem of blokkade, probeer het later nog eens.")
+        return
+    if final != item["url"]:
+        print(f"Doorgestuurd naar: {final}")
+    print(f"Pagina: {len(page)} tekens | titel lijkt op niet-gevonden: {not_found_title(page)}")
     ld, nuxt = jsonld_blocks(page), nuxt_blocks(page)
     print(f"JSON-LD blokken: {len(ld)} | Nuxt-data blokken: {len(nuxt)}")
     for s in item["maten"]:
@@ -264,19 +345,88 @@ def diagnose(item):
             korte = " ".join(t for t in (klassen.group(1).split() if klassen else [])
                              if not t.startswith(("hover:", "border", "min-", "h-", "px", "inline", "items", "justify", "transition", "duration")))
             print(f"{s}: {'OP VOORRAAD' if not SOLD_OUT.search(els[0][1]) else 'uitverkocht'} | classes: {korte[:120]}")
-    apis = sorted(set(re.findall(r'["\'](/api/[^"\'\s<>]{3,80}|https?://[^"\'\s<>]*(?:api|graphql)[^"\'\s<>]{0,60})["\']', page)))
-    print("API-adressen op de pagina:", apis[:10] or "geen")
-    ctx = re.search(r".{0,80}Check winkelvoorraad.{0,80}", page, re.S | re.I)
-    if ctx:
-        print("Winkelvoorraad-context:", re.sub(r"\s+", " ", ctx.group(0)))
 
 
+# ---------------------------------------------------------------- Hoofdprogramma
 def load_state():
     try:
         with open(STATE_FILE) as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def process(item, state):
+    """Checkt één shirt, stuurt meldingen en werkt de state bij. Geeft het aantal fouten terug."""
+    url, naam = item["url"], item["naam"]
+    print(f"[i] {naam}")
+    pkey = f"{url}|__pagina__"
+    pst = dict(state.get(pkey)) if isinstance(state.get(pkey), dict) else {}
+    try:
+        signal, results, final, reason = evaluate(item, pst.get("final"))
+    except Exception as e:
+        signal, results, final, reason = "error", None, url, f"{e.__class__.__name__}: {e}"
+
+    if signal == "error":
+        print(f"    [!] Pagina ophalen mislukt ({reason}), volgende run opnieuw.")
+        return 1
+
+    if signal == "removed":
+        pst["misses"] = pst.get("misses", 0) + 1
+        if pst.get("status") == "removed":
+            print(f"    Pagina nog steeds weg ({reason})")
+        elif pst["misses"] >= VERWIJDERD_NA:
+            print(f"    Pagina VERWIJDERD ({reason})")
+            if notify(f"Pagina verwijderd: {naam}",
+                      f"Deze pagina bestaat niet meer ({reason}). Je krijgt een melding zodra hij terug is.",
+                      url, "default", "wastebasket"):
+                pst["status"] = "removed"
+        else:
+            print(f"    Pagina lijkt weg ({reason}), check {pst['misses']}/{VERWIJDERD_NA} voordat er een melding komt")
+        state[pkey] = pst
+        return 0
+
+    if signal == "unknown":
+        print("    [!] Pagina bestaat, maar geen enkele maat kon gelezen worden (site veranderd?)")
+        pst["misses"] = 0
+        state[pkey] = pst
+        return 1
+
+    # signal == "ok": de pagina bestaat
+    errors = 0
+    if reason:
+        print(f"    ({reason})")
+    back = pst.get("status") == "removed"
+    if back:
+        op = [s for s, (a, _) in results.items() if a]
+        uit = [s for s, (a, _) in results.items() if a is False]
+        parts = ([f"Op voorraad: {', '.join(op)}"] if op else []) + ([f"Nog uitverkocht: {', '.join(uit)}"] if uit else [])
+        print("    Pagina is TERUG")
+        if not notify(f"Pagina terug: {naam}", "De pagina is weer online. " + ". ".join(parts) + ".",
+                      url, "high" if op else "default", "tada"):
+            return 1  # niets bijwerken, volgende run opnieuw proberen
+    state[pkey] = {"status": "ok", "misses": 0, "final": final}
+
+    for size, (available, source) in results.items():
+        key = f"{url}|{size}"
+        if available is None:
+            print(f"    [!] {size}: status onbekend (staat deze maat wel op de pagina?)")
+            errors += 1
+            continue
+        prev = state.get(key)
+        print(f"    {size}: {'OP VOORRAAD' if available else 'uitverkocht'} (bron: {source})")
+        sent = True
+        if not back:  # bij 'pagina terug' staat de maatinfo al in die ene melding
+            if available and prev is not True:
+                sent = notify(f"Maat {size} op voorraad: {naam}",
+                              f"Tik om naar het shirt te gaan. (bron: {source})", url)
+            elif not available and prev is True:
+                sent = notify(f"Maat {size} uitverkocht: {naam}",
+                              "Deze maat is niet meer beschikbaar. Je krijgt weer een melding als hij terugkomt.",
+                              url, "default", "x")
+        if sent:
+            state[key] = available
+    return errors
 
 
 def main():
@@ -286,37 +436,12 @@ def main():
         return 0
     if os.environ.get("DIAGNOSE", "").lower() == "true":
         for item in WATCHLIST:
-            if item.get("type") == "generic":
+            if (item.get("type") or "generic") == "generic":
                 diagnose(item)
         return 0
 
     state = load_state()
-    errors = 0
-    for item in WATCHLIST:
-        print(f"[i] {item['naam']}")
-        try:
-            checker = check_sfcc if item.get("type", "sfcc") == "sfcc" else check_generic
-            results = checker(item["url"], item["maten"])
-        except urllib.error.HTTPError as e:
-            print(f"    [!] Pagina ophalen mislukt: HTTP {e.code}")
-            errors += 1
-            continue
-        except Exception as e:
-            print(f"    [!] Pagina ophalen mislukt: {e}")
-            errors += 1
-            continue
-        for size, (available, source) in results.items():
-            key = f"{item['url']}|{size}"
-            if available is None:
-                print(f"    [!] {size}: status onbekend")
-                errors += 1
-                continue
-            print(f"    {size}: {'OP VOORRAAD' if available else 'uitverkocht'} (bron: {source})")
-            if available and state.get(key) is not True:
-                notify(f"Maat {size} op voorraad: {item['naam']}",
-                       f"Tik om naar het shirt te gaan. (bron: {source})", item["url"])
-            state[key] = available
-
+    errors = sum(process(item, state) for item in WATCHLIST)
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
     return 1 if errors else 0
